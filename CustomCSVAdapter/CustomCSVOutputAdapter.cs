@@ -31,12 +31,18 @@ namespace CustomCSVAdapter
 
 
         private Dictionary<Guid, Queue<double>> measurement_dictionary;
+        private Dictionary<Guid, Queue<double>> measurement_log_voltage_diff_dictionary;
         private double percentage_trigger = 1.0;
         private Dictionary<Guid, double> measurement_average_dictionary;
         private Dictionary<Guid, double> measurement_initial_average_dictionary;
+        private Dictionary<Guid, double> measurement_LE_initial_dictionary;
         private Dictionary<Guid, double> measurement_LE_dictionary;
+        private Dictionary<Guid, double> LE_iteration_dictionary;
         private Dictionary<Guid, bool> measurement_average_flag_dictionary;
+        private Dictionary<Guid, bool> measurement_LE_start_flag_dictionary;
+        private Dictionary<Guid, bool> measurement_LE_window_over_flag_dictionary;
         private int window_length = 25;
+        private double delta_time = 1 / 60;
 
         #endregion
 
@@ -50,11 +56,15 @@ namespace CustomCSVAdapter
         {
             m_measurementCount = 0;
             measurement_dictionary = new Dictionary<Guid, Queue<double>>(2 * window_length);
+            measurement_log_voltage_diff_dictionary = new Dictionary<Guid, Queue<double>>(2 * window_length);
             measurement_average_dictionary = new Dictionary<Guid, double>(2 * window_length);
             measurement_initial_average_dictionary = new Dictionary<Guid, double>(2 * window_length);
+            measurement_LE_initial_dictionary = new Dictionary<Guid, double>(2 * window_length);
             measurement_LE_dictionary = new Dictionary<Guid, double>(2 * window_length);
+            LE_iteration_dictionary = new Dictionary<Guid, double>(2 * window_length);
             measurement_average_flag_dictionary = new Dictionary<Guid, bool>();
-
+            measurement_LE_start_flag_dictionary = new Dictionary<Guid, bool>();
+            measurement_LE_window_over_flag_dictionary = new Dictionary<Guid, bool>();
 
         }
 
@@ -148,7 +158,7 @@ namespace CustomCSVAdapter
 
             if (settings.TryGetValue("TriggerValue", out Temporary))
                 //If the TriggerValue is not given b the user, it is null and will throw an exception when converitng to double.
-                ThresholdTriggerValue = (Temporary.Equals("") || Temporary == null) ?  0 : Convert.ToDouble(Temporary);
+                ThresholdTriggerValue = (Temporary.Equals("") || Temporary == null) ? 0 : Convert.ToDouble(Temporary);
 
             if (settings.TryGetValue("ChangingParameter1Value", out Temporary))
                 //If the TriggerValue is not given b the user, it is null and will throw an exception when converitng to double.
@@ -157,7 +167,7 @@ namespace CustomCSVAdapter
             if (settings.TryGetValue("ChangingParameter2Value", out Temporary))
                 //If the TriggerValue is not given b the user, it is null and will throw an exception when converitng to double.
                 ChangingParameter2 = (Temporary.Equals("") || Temporary == null) ? 0 : Convert.ToDouble(Temporary);
-            
+
         }
 
         /// <summary>
@@ -177,14 +187,14 @@ namespace CustomCSVAdapter
             m_outStream.Close();
         }
 
-        // First Measurement Key 
+        // First Measurement Key
         private Guid FirstMeasurementKey;
 
         protected override void ProcessMeasurements(IMeasurement[] measurements)
         {
             if ((object)measurements != null)
             {
-                
+
                 StringBuilder builder = new StringBuilder();
                 StringBuilder manipulated_builder = new StringBuilder();
                 if (!header_written)
@@ -193,18 +203,20 @@ namespace CustomCSVAdapter
                 FirstMeasurementKey = measurements[0].ID; // Get the first measurement key
 
                 int number_of_measurement_keys = measurements.MeasurementKeys().Length;
-                for (int i = 0; i < measurements.Length; i = i + number_of_measurement_keys){
+                for (int i = 0; i < measurements.Length; i = i + number_of_measurement_keys)
+                {
                     builder.Append((long)measurements[i].Timestamp);
                     for (int j = 0; j < measurements.Select(m => m.Key).Distinct().ToArray().Length; j++)
                     {
                         builder.Append(',').Append(measurements[i + j].AdjustedValue);
                         manipulated_builder.Append(CalculateMovingAverageInMeasurement(measurements[i + j], window_length));
+                        manipulated_builder.Append(CalculateLEInMeasurement(measurements[i + j], window_length, delta_time));
                     }
                     builder.Append(manipulated_builder.ToString());
-                    
+
                     builder.Append(Environment.NewLine);
                 }
-                
+
                 m_outStream.Write(builder.ToString());
                 m_measurementCount += measurements.Length;
             }
@@ -220,7 +232,7 @@ namespace CustomCSVAdapter
         //Krishnan Edit
         public String CalculateMovingAverageInMeasurement(IMeasurement measurement, int window_length)
         {
-            
+
             StringBuilder builder = new StringBuilder();
             Queue<double> measurement_queue;
             double moving_average_value;
@@ -290,17 +302,17 @@ namespace CustomCSVAdapter
                     //Trigger only if the measurement value is < the threshold.
                     //First Measurement Key
                     //measurement.Key.ID.Equals(FirstMeasurementKey)
-                    if ( measurement_average_dictionary[FirstMeasurementKey] < ThresholdTriggerValue)
+                    if (measurement_average_dictionary[FirstMeasurementKey] < ThresholdTriggerValue)
                         builder.Append(',').Append(callPythonScript(ChangingParameter1, ChangingParameter2));
 
 
-
                 }
-                else {
+                else
+                {
                     builder.Append(',');
                     builder.Append("test");
                 }
-                
+
 
             }
             if (measurement_queue.Count > window_length + 1)
@@ -308,13 +320,161 @@ namespace CustomCSVAdapter
                 builder.Append(",");
                 builder.Append("NA - More");
             }
-            
+
             return builder.ToString();
         }
 
+        //Amar Edit
+        public String CalculateLEInMeasurement(IMeasurement measurement, int window_length, double delta_time)
+        {
 
+            StringBuilder builder = new StringBuilder();
+            Queue<double> measurement_queue;
+            Queue<double> measurement_log_voltage_diff_queue;
+            double moving_average_value;
+            double measurement_LE_initial_value;
+            double measurement_LE_value;
+            double LE_iteration_value = 1;
+            double Appending_term = 0;
+            bool measurement_LE_start_flag_value = false;
+            bool measurement_LE_window_over_flag_value = false;
+            if (!measurement_dictionary.TryGetValue(measurement.ID, out measurement_queue))
+            {
+                measurement_queue = new Queue<double>();
+                measurement_dictionary.Add(measurement.ID, measurement_queue);
+            }
+            if (!measurement_log_voltage_diff_dictionary.TryGetValue(measurement.ID, out measurement_log_voltage_diff_queue))
+            {
+                measurement_log_voltage_diff_queue = new Queue<double>();
+                measurement_log_voltage_diff_dictionary.Add(measurement.ID, measurement_log_voltage_diff_queue);
+            }
+
+            if (!measurement_average_dictionary.TryGetValue(measurement.ID, out moving_average_value))
+            {
+                measurement_average_dictionary.Add(measurement.ID, moving_average_value);
+            }
+            if (!measurement_LE_initial_dictionary.TryGetValue(measurement.ID, out measurement_LE_initial_value))
+            {
+                measurement_LE_initial_dictionary.Add(measurement.ID, measurement_LE_initial_value);
+            }
+            if (!measurement_LE_dictionary.TryGetValue(measurement.ID, out measurement_LE_value))
+            {
+                measurement_LE_dictionary.Add(measurement.ID, measurement_LE_value);
+            }
+            if (!LE_iteration_dictionary.TryGetValue(measurement.ID, out LE_iteration_value))
+            {
+                LE_iteration_dictionary.Add(measurement.ID, LE_iteration_value);
+            }
+            if (!measurement_LE_start_flag_dictionary.TryGetValue(measurement.ID, out measurement_LE_start_flag_value))
+            {
+                measurement_LE_start_flag_dictionary.Add(measurement.ID, measurement_LE_start_flag_value);
+            }
+            if (!measurement_LE_window_over_flag_dictionary.TryGetValue(measurement.ID, out measurement_LE_window_over_flag_value))
+            {
+                measurement_LE_window_over_flag_dictionary.Add(measurement.ID, measurement_LE_window_over_flag_value);
+            }
+
+            // The numbers 10000 and 0.001 may be changed
+            if (measurement_queue.Count == window_length)
+            {
+                //measurement_log_voltage_diff_queue.Enqueue((Math.Log(Math.Abs(measurement_queue.Peek()-measurement_queue.ElementAt(2))/10000+0.001)));
+                if (((measurement_queue.ElementAt(window_length) - measurement_queue.ElementAt(window_length - 1)) > 4000) & measurement_LE_start_flag_dictionary[measurement.ID] == false)
+                {
+                    measurement_LE_start_flag_dictionary[measurement.ID] = true;
+                }
+                else
+                {
+                    measurement_LE_start_flag_dictionary[measurement.ID] = false;
+
+                }
+            }
+            if (measurement_queue.Count == window_length && measurement_LE_start_flag_dictionary[measurement.ID] == true)
+            {
+                Appending_term = ((Math.Log(Math.Abs(measurement_queue.ElementAt(window_length) - measurement_queue.ElementAt(window_length - 1)) / 10000 + 0.001))); ;
+                if (((measurement_queue.ElementAt(2) - measurement_queue.ElementAt(1)) > 4000) && measurement_LE_window_over_flag_dictionary[measurement.ID] == false)
+                {
+                    measurement_LE_window_over_flag_dictionary[measurement.ID] = true;
+                }
+                else
+                {
+                    measurement_LE_window_over_flag_dictionary[measurement.ID] = false;
+                    LE_iteration_dictionary[measurement.ID] = 1;
+                }
+
+                if (measurement_log_voltage_diff_queue.Count < window_length)
+                {
+                    builder.Append(",");
+                    builder.Append("LE Window - Small");
+                    measurement_log_voltage_diff_queue.Enqueue(Appending_term);
+                    if (measurement_log_voltage_diff_queue.Count == window_length)
+                    {
+                        measurement_LE_initial_dictionary[measurement.ID] = measurement_log_voltage_diff_queue.ToArray().Average();
+                        measurement_LE_dictionary[measurement.ID] = measurement_LE_initial_dictionary[measurement.ID];
+                    }
+                    else
+                    {
+                        measurement_LE_initial_dictionary[measurement.ID] = 0;
+                        measurement_LE_dictionary[measurement.ID] = 0;
+                    }
+
+                    //measurement_average_flag_value = false;
+
+                }
+
+                else if (measurement_log_voltage_diff_queue.Count == window_length)
+                {
+                    measurement_log_voltage_diff_queue.Enqueue(Appending_term);
+                    if (measurement_LE_window_over_flag_dictionary[measurement.ID] == false)
+                    {
+                        //Moving LE initial window getting updated here
+                        measurement_LE_initial_dictionary[measurement.ID] = measurement_LE_initial_dictionary[measurement.ID] + (Appending_term - measurement_log_voltage_diff_queue.Dequeue()) / window_length;
+                        measurement_LE_dictionary[measurement.ID] = measurement_LE_initial_dictionary[measurement.ID];
+                        builder.Append(",");
+                        builder.Append("LE not activated");
+                        //builder.Append(measurement_LE_dictionary[measurement.ID]);//appending the LE to the string
+                        //builder.Append(measurement_average_dictionary[measurement.ID]);// appending the moving average to the string
+
+                        //Trigger only if the measurement value is < the threshold.
+                        //First Measurement Key
+                        //measurement.Key.ID.Equals(FirstMeasurementKey)
+                        //if ( measurement_average_dictionary[FirstMeasurementKey] < ThresholdTriggerValue)
+                        //    builder.Append(',').Append(callPythonScript(ChangingParameter1, ChangingParameter2));
+
+
+                    }
+                    else
+                    {
+                        //Moving LE calculation window getting updated here
+                        measurement_LE_dictionary[measurement.ID] = (measurement_LE_dictionary[measurement.ID] + (Appending_term - measurement_log_voltage_diff_queue.Dequeue()) / window_length) - measurement_LE_initial_dictionary[measurement.ID];
+                        builder.Append(',');
+                        builder.Append(measurement_LE_dictionary[measurement.ID] / delta_time / LE_iteration_dictionary[measurement.ID]);//appending the LE to the string
+                        LE_iteration_dictionary[measurement.ID] = LE_iteration_dictionary[measurement.ID] + 1;
+                        //builder.Append(measurement_average_dictionary[measurement.ID]);//
+                        //builder.Append(',');
+                        //builder.Append("test");
+                    }
+
+
+                }
+                else if (measurement_log_voltage_diff_queue.Count > window_length + 1)
+                {
+                    builder.Append(",");
+                    builder.Append("NA - More");
+                }
+
+            }
+            if (LE_iteration_dictionary[measurement.ID] > 4000)
+            {
+                measurement_log_voltage_diff_queue.Clear();
+                measurement_LE_start_flag_dictionary[measurement.ID] = false;
+                LE_iteration_dictionary[measurement.ID] = 0;
+                measurement_LE_dictionary[measurement.ID] = 0;
+                measurement_LE_initial_dictionary[measurement.ID] = 0;
+            }
+            return builder.ToString();
+        }
         /// <summary>
-        /// 
+        ///
         /// </summary>
         /// <param name="measurements"></param>
         /// <returns></returns>
@@ -331,7 +491,8 @@ namespace CustomCSVAdapter
             //To be included-
 
             foreach (MeasurementKey key in unique_measurement_keys)
-                builder.Append(",").Append(key).Append("-").Append("Moving Average");
+                builder.Append(",").Append(key).Append("-").Append("Moving Average").Append(",").Append(key).Append("-").Append("LE Calculated");
+
 
             builder.Append(Environment.NewLine);
             header_written = true;
@@ -350,9 +511,9 @@ namespace CustomCSVAdapter
 
         public string callPythonScript(double x, double y)
         {
-           
+
             //Arguments to be passed to the python script- x,y
-            
+
             //Process Start Information for the Python Process
             ProcessStartInfo PythonProcessStartInfo = new ProcessStartInfo(PythonExecutable);
 
@@ -363,15 +524,15 @@ namespace CustomCSVAdapter
 
             //For later implementation
             /*PythonProcessStartInfo.Verb = "runas";
-
+ 
             PythonProcessStartInfo.UserName = "";
-
+ 
             PythonProcessStartInfo.Password = new SecureString({'d','s'}, 4)*/
 
 
             //Arguments
             PythonProcessStartInfo.Arguments = PythonFileToCall + " " + x + " " + y;
-            
+
             if (PythonProcess != null)
             {
                 if (!PythonProcess.HasExited)
@@ -390,13 +551,13 @@ namespace CustomCSVAdapter
             PythonProcess = new Process();
 
             PythonProcess.StartInfo = PythonProcessStartInfo;
-            
+
             //Start The process
             PythonProcess.Start();
 
             return "Python Script Called";
         }
-        
+
         #endregion
     }
 }

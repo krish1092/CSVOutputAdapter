@@ -69,21 +69,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CustomCSVOutputAdapter.cs" />
-    <Compile Include="PlotOpenPDCData.cs">
-      <SubType>UserControl</SubType>
-    </Compile>
-    <Compile Include="PlotOpenPDCData.Designer.cs">
-      <DependentUpon>PlotOpenPDCData.cs</DependentUpon>
-    </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
-  </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="PlotOpenPDCData.resx">
-      <DependentUpon>PlotOpenPDCData.cs</DependentUpon>
-    </EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
