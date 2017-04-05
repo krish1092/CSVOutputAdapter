@@ -156,6 +156,9 @@ namespace CustomCSVAdapter
             if (settings.TryGetValue("PythonFileLocation", out PythonFileName))
                 PythonFileToCall = PythonFileName;
 
+            if (settings.TryGetValue("PythonGraphScriptLocation", out PythonFileName))
+                PythonGraphScriptLocation = PythonFileName;
+
             if (settings.TryGetValue("TriggerValue", out Temporary))
                 //If the TriggerValue is not given b the user, it is null and will throw an exception when converitng to double.
                 ThresholdTriggerValue = (Temporary.Equals("") || Temporary == null) ? 0 : Convert.ToDouble(Temporary);
@@ -167,6 +170,12 @@ namespace CustomCSVAdapter
             if (settings.TryGetValue("ChangingParameter2Value", out Temporary))
                 //If the TriggerValue is not given b the user, it is null and will throw an exception when converitng to double.
                 ChangingParameter2 = (Temporary.Equals("") || Temporary == null) ? 0 : Convert.ToDouble(Temporary);
+
+            SetPythonProcessInfo();
+
+            //FileName=E:\testing_csv_trial43b.csv; InputMeasurementKeys=069c5e29-f78a-46f6-9dff-c92cb4f69371; RequeueOnException=False; PythonExecutableLocation=C:\Python27\python.exe; PythonFileLocation=E:\\Sample.py; TriggerValue=400000; ChangingParameter1Value=100; ChangingParameter2Value=200;PythonGraphScriptLocation=E:\\PyQtGraph.py
+
+
 
         }
 
@@ -185,10 +194,19 @@ namespace CustomCSVAdapter
         protected override void AttemptDisconnection()
         {
             m_outStream.Close();
+
+            //exit the grah process
+            PythonGraphProcess.StandardInput.Write("exit");
+            PythonGraphProcess.WaitForExit(3000); // Wait an arbitrary 3 seconds before deciding to pull the plug
+            PythonGraphProcess.Close(); //Free the memory in C# context
+            PythonGraphProcess.Dispose(); // Free the memory in System context
+            PythonGraphProcess = null;
+            
+
         }
 
         // First Measurement Key
-        private Guid FirstMeasurementKey;
+        private MeasurementKey FirstMeasurementKey;
 
         protected override void ProcessMeasurements(IMeasurement[] measurements)
         {
@@ -200,7 +218,7 @@ namespace CustomCSVAdapter
                 if (!header_written)
                     builder.Append(WriteHeader(measurements));
 
-                FirstMeasurementKey = measurements[0].ID; // Get the first measurement key
+                FirstMeasurementKey = measurements[0].Key; // Get the first measurement key
 
                 int number_of_measurement_keys = measurements.MeasurementKeys().Length;
                 for (int i = 0; i < measurements.Length; i = i + number_of_measurement_keys)
@@ -210,7 +228,8 @@ namespace CustomCSVAdapter
                     {
                         builder.Append(',').Append(measurements[i + j].AdjustedValue);
                         manipulated_builder.Append(CalculateMovingAverageInMeasurement(measurements[i + j], window_length));
-                        manipulated_builder.Append(CalculateLEInMeasurement(measurements[i + j], window_length, delta_time));
+                        //manipulated_builder.Append(CalculateLEInMeasurement(measurements[i + j], window_length, delta_time));
+                        
                     }
                     builder.Append(manipulated_builder.ToString());
 
@@ -301,9 +320,14 @@ namespace CustomCSVAdapter
 
                     //Trigger only if the measurement value is < the threshold.
                     //First Measurement Key
-                    //measurement.Key.ID.Equals(FirstMeasurementKey)
-                    if (measurement_average_dictionary[FirstMeasurementKey] < ThresholdTriggerValue)
+                    
+                    if (measurement_average_dictionary[FirstMeasurementKey.SignalID] < ThresholdTriggerValue)
+                    {
                         builder.Append(',').Append(callPythonScript(ChangingParameter1, ChangingParameter2));
+                       
+                    }
+                    if(measurement.Key.SignalID.Equals(FirstMeasurementKey.SignalID))
+                        CallPyQtGraphScript(measurement.AdjustedValue);
 
 
                 }
@@ -502,25 +526,23 @@ namespace CustomCSVAdapter
         }
 
         //Location of Python
-        private string PythonExecutable;// = @"C:\Python27\python.exe";
+        private string PythonExecutable, PythonFileToCall, PythonGraphScriptLocation;// = @"C:\Python27\python.exe";
 
-        //Location of Python File
-        private string PythonFileToCall; // = "E:\\Sample.py";
+        private ProcessStartInfo PythonProcessStartInfo;
+        
+        private Process PythonProcess, PythonGraphProcess;
+        
 
-        private Process PythonProcess;
-
-        public string callPythonScript(double x, double y)
+        private void SetPythonProcessInfo()
         {
-
-            //Arguments to be passed to the python script- x,y
-
             //Process Start Information for the Python Process
-            ProcessStartInfo PythonProcessStartInfo = new ProcessStartInfo(PythonExecutable);
+            PythonProcessStartInfo = new ProcessStartInfo(PythonExecutable);
 
             //we need to access the standard output
             PythonProcessStartInfo.UseShellExecute = false;
             PythonProcessStartInfo.RedirectStandardOutput = true;
             PythonProcessStartInfo.RedirectStandardError = true;
+
 
             //For later implementation
             /*PythonProcessStartInfo.Verb = "runas";
@@ -528,10 +550,40 @@ namespace CustomCSVAdapter
             PythonProcessStartInfo.UserName = "";
  
             PythonProcessStartInfo.Password = new SecureString({'d','s'}, 4)*/
+            
+        }
 
 
-            //Arguments
-            PythonProcessStartInfo.Arguments = PythonFileToCall + " " + x + " " + y;
+        public void CallPyQtGraphScript(double y)
+        {
+
+            if (PythonGraphProcess != null)
+            {
+                //Passing only the y value
+                PythonGraphProcess.StandardInput.WriteLine(y);
+            }
+            else{
+                //The process
+                PythonGraphProcess = new Process();
+
+                //Set the python process starting info
+                PythonGraphProcess.StartInfo = PythonProcessStartInfo;
+
+                //Pass the arguments
+                PythonGraphProcess.StartInfo.Arguments = PythonGraphScriptLocation + " " + y;
+
+                //Start The process
+                PythonGraphProcess.Start();
+
+                PythonGraphProcess.StandardInput.WriteLine(y);
+
+            }
+        }
+
+
+
+        public string callPythonScript(double x, double y)
+        {
 
             if (PythonProcess != null)
             {
@@ -546,11 +598,15 @@ namespace CustomCSVAdapter
                     return Output;
                 }
             }
-
+            
             //The process
             PythonProcess = new Process();
 
+            //Set the python process starting info
             PythonProcess.StartInfo = PythonProcessStartInfo;
+
+            //Pass the arguments
+            PythonProcess.StartInfo.Arguments = PythonFileToCall + " " + x + " " + y;
 
             //Start The process
             PythonProcess.Start();
