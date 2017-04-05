@@ -571,6 +571,8 @@ namespace CustomCSVAdapter
 
                 //Pass the arguments
                 PythonGraphProcess.StartInfo.Arguments = PythonGraphScriptLocation + " " + y;
+                PythonGraphProcess.StartInfo.RedirectStandardInput = true;
+
 
                 //Start The process
                 PythonGraphProcess.Start();
